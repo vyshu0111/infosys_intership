@@ -67,5 +67,5 @@ for batch_X, batch_y in train_loader:
     print("\nSample batch X:", batch_X)
     print("Sample batch y:", batch_y)
     break
-
+    is this ok or should i do other one 
 
