@@ -3,3 +3,9 @@ If you are comfortable, you can chat in mail. My email id  poojachamundi1@gmail.
  i am doing preprocessing and data collection 
 should i share code 
 #cmtfromdivyansh - yes upload a file and share the code and dataset
+
+
+
+yes divyansh your work is trin test split the model 
+and i am going to do the ppt
+
