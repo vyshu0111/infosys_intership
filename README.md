@@ -9,3 +9,5 @@ should i share code
 yes divyansh your work is trin test split the model 
 and i am going to do the ppt
 
+
+#comment from vyshnavi pooja do we need to take the dataset from the kaggle or else in built dataset is also fine
