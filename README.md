@@ -23,3 +23,5 @@ i have shared the train test split code as a separate file
 titanic_data sets
 
 ##divyansh - share the link pls if it can be pasted here
+
+Hey,communicating only through GitHub is a bit confusing and not very smooth for our project discussions. If you’re all okay with it, we can create a WhatsApp group and share updates there—it’ll be faster and easier to coordinate
