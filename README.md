@@ -15,4 +15,6 @@ and i am going to do the ppt
 if you are comfortable, you can text on my mail poojachamundi1@gmail.com
 
 did you have prepared code and ppt 
-#cmtdivyansh - if data collection and preprocessing is ready pls share it by creating a file
+#cmtdivyansh - if data collection and preprocessing is ready pls share it by creating a file 
+i have shared the train test split code as a separate file
+
