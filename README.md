@@ -25,3 +25,5 @@ titanic_data sets
 ##divyansh - share the link pls if it can be pasted here
 
 Hey,communicating only through GitHub is a bit confusing and not very smooth for our project discussions. If you’re all okay with it, we can create a WhatsApp group and share updates there—it’ll be faster and easier to coordinate
+
+#cmtdivyansh - vyshnavi if you can share your mail id i can create a gmail space where we can chat without sharing phone no.
