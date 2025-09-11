@@ -38,3 +38,5 @@ pooja pls check if you can recieve message that i sent
 
 #divyansh - if it is not working we can create group
 # vyshnavi i texted you in mail did you recieved 
+we can also create a WhatsApp group If you’re all okay.
+
