@@ -41,3 +41,5 @@ pooja pls check if you can recieve message that i sent
 we can also create a WhatsApp group If you’re all okay.
 #cmtdivyansh - i think mail text is not working, lets create the whatsapp group
 my no. -  8527031340
+
+##vyshnavi i did not receive any mail divyansh
