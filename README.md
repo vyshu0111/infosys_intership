@@ -11,3 +11,5 @@ and i am going to do the ppt
 
 
 #comment from vyshnavi pooja do we need to take the dataset from the kaggle or else in builtin dataset is also fine
+should i share code
+if you are comfortable, you can text on my mail poojachamundi1@gmail.com
