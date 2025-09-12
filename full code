@@ -1,0 +1,89 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix
+from IPython.display import display
+from tabulate import tabulate
+import numpy as np
+
+file_path = "creditcard_2023.csv"   
+df = pd.read_csv(file_path)
+
+print(" ===>  Dataset first 5 rows:")
+display(df.head())
+
+print("\n ===> Dataset info:")
+display(pd.DataFrame({
+   "Column": df.columns,
+   "Non-Null Count": df.notnull().sum(),
+   "Dtype": df.dtypes
+}))
+
+print("\n===> Missing values:")
+missing = pd.DataFrame(df.isnull().sum(), columns=["Missing Values"])
+display(missing)
+
+print("\n===> Class distribution:")
+class_dist = pd.DataFrame(df['Class'].value_counts().sort_index(), columns=["Count"])
+class_dist['Percentage'] = (class_dist['Count'] / len(df) * 100).round(2)
+display(class_dist)
+
+df = df.dropna()
+
+X = df.drop(columns=["Class"])  # Features
+Y = df["Class"]                 # Target
+
+X_train, X_test, Y_train, Y_test = train_test_split(
+   X, Y, test_size=0.2, random_state=42, stratify=Y
+)
+
+print("\n===> Dataset Split:")
+split_info = pd.DataFrame({
+   "Set": ["Training", "Testing"],
+   "X Shape": [X_train.shape, X_test.shape],
+   "Y Shape": [Y_train.shape, Y_test.shape]
+})
+display(split_info)
+
+print("\n===> Class distribution in splits:")
+train_dist = pd.DataFrame({
+    "Training": Y_train.value_counts().sort_index(),
+    "Testing": Y_test.value_counts().sort_index()
+})
+display(train_dist)
+
+model = LogisticRegression(random_state=42, max_iter=1000)
+model.fit(X_train, Y_train)
+
+y_pred = model.predict(X_test)
+y_pred_proba = model.predict_proba(X_test)[:, 1]  # Probability of fraud
+
+accuracy = accuracy_score(Y_test, y_pred)
+precision = precision_score(Y_test, y_pred)
+recall = recall_score(Y_test, y_pred)
+f1 = f1_score(Y_test, y_pred)
+
+print("\n===> Predictions vs Actual (First 10):")
+pred_actual = pd.DataFrame({
+   "Prediction": y_pred[:10],
+   "Actual": Y_test.values[:10],
+   "Fraud_Probability": np.round(y_pred_proba[:10], 3)
+})
+display(pred_actual)
+
+print("\n===> Evaluation Metrics:")
+metrics = pd.DataFrame({
+    "Metric": ["Accuracy", "Precision", "Recall", "F1-Score"],
+    "Value": [accuracy, precision, recall, f1]
+})
+display(metrics)
+
+print("\n===> Detailed Classification Report:")
+print(classification_report(Y_test, y_pred, target_names=['Normal', 'Fraud']))
+
+print("\n===> Confusion Matrix:")
+cm = confusion_matrix(Y_test, y_pred)
+cm_df = pd.DataFrame(cm, 
+                     index=['Actual Normal', 'Actual Fraud'],
+                     columns=['Predicted Normal', 'Predicted Fraud'])
+display(cm_df)
