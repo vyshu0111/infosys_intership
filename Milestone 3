@@ -1,0 +1,278 @@
+import pandas as pd
+import re
+def load_and_preprocess(path: str, nrows: int = None) -> pd.DataFrame:
+    # read (safer for large file)
+    df = pd.read_csv(path, encoding='utf-8', low_memory=False, nrows=nrows)
+    # normalize column names
+    df.columns = [c.strip().lower() for c in df.columns]
+    # required columns and ensure they exist
+    required = ["link", "headline", "category", "short_description", "authors", "date"]
+    for c in required:
+        if c not in df.columns:
+            df[c] = ""
+        else:
+            # fill NaN then convert to str and strip whitespace
+            df[c] = df[c].fillna("").astype(str).str.strip()
+    # Normalize category (vectorized)
+    df["category"] = df["category"].str.upper().str.strip()
+    # Fill short_description with headline when missing/empty
+    df.loc[df["short_description"].eq("") | df["short_description"].isna(), "short_description"] = df["headline"]
+    # Vectorized date parsing (faster & consistent)
+    dates = pd.to_datetime(df["date"].replace("", pd.NA), errors="coerce", dayfirst=False)
+    df["date"] = dates.dt.strftime("%Y-%m-%d").fillna("")
+    # Improved author splitting
+    def split_authors(txt: str):
+        if not txt or txt.strip() == "":
+            return []
+        # replace " and " with comma (case-insensitive)
+        txt2 = re.sub(r'\s+and\s+', ',', txt, flags=re.IGNORECASE)
+        parts = [p.strip() for p in re.split(r'[,\;/|]', txt2) if p.strip()]
+        return parts
+    df["author_list"] = df["authors"].apply(split_authors)
+    # Also store a CSV-friendly string
+    df["author_list_str"] = df["author_list"].apply(lambda L: ", ".join(L) if L else "")
+    # Drop duplicates (after trimming above)
+    df = df.drop_duplicates(subset=["link", "headline"], keep="first").reset_index(drop=True)
+    return df
+# usage
+df = load_and_preprocess("news_dataset.csv")
+print(df.shape)
+print(df.head())
+
+#Milestone 2
+import spacy
+nlp = spacy.load("en_core_web_sm")
+# ------------------------
+# Named Entity Recognition (NER)
+# ------------------------
+def extract_entities(text: str):
+    doc = nlp(text)
+    entities = [(ent.text, ent.label_) for ent in doc.ents]
+    return entities
+# ------------------------
+# Relation Extraction (Rule-based)
+# ------------------------
+def extract_relations(text: str):
+    doc = nlp(text)
+    relations = []
+    for token in doc:
+        # main verb = relation
+        if token.dep_ == "ROOT" and token.pos_ == "VERB":
+            # Subjects/objects filtered for meaningful entities
+            subjects = [w.text for w in token.lefts if w.dep_ in ["nsubj", "nsubjpass"] and len(w.text) > 2 and w.text.lower() not in ["it", "we", "they", "he", "she"]]
+            objects = [w.text for w in token.rights if w.dep_ in ["dobj", "attr", "dative", "oprd"] and len(w.text) > 2 and w.text.lower() not in ["it", "them", "him", "her"]]
+
+            if subjects and objects:
+                relations.append((subjects[0], token.text, objects[0]))
+    return relations
+# ------------------------
+# Build triples with a cap
+# ------------------------
+def build_triples(df: pd.DataFrame, text_col: str = "short_description", max_triples: int = 1000):
+    all_triples = []
+    # sample a subset if needed
+    sample_df = df.sample(n=min(max_triples, len(df)))
+    
+    for idx, row in sample_df.iterrows():
+        text = str(row[text_col])
+        relations = extract_relations(text)
+        for (subj, rel, obj) in relations:
+            all_triples.append({
+                "Entity1": subj,
+                "Relation": rel,
+                "Entity2": obj,
+                "Category": row["category"],
+                "Date": row["date"],
+                "Source": row["link"]
+            })
+    
+    triples_df = pd.DataFrame(all_triples)
+    return triples_df
+
+# ------------------------
+# usage
+# ------------------------
+import nltk
+from nltk.corpus import stopwords
+nltk.download("stopwords")
+stop_words = set(stopwords.words("english"))
+# Combine headline and short_description for better context
+df["full_text"] = df["headline"] + ". " + df["short_description"]
+
+triples_df = build_triples(df, text_col="full_text", max_triples=1000)  # df is from preprocessing
+# Filter out trivial or meaningless triples
+triples_df = triples_df[
+    (triples_df["Entity1"].str.len() > 2) &
+    (triples_df["Entity2"].str.len() > 2) &
+    (triples_df["Relation"].str.len() > 1)
+]
+def clean_stopwords(text):
+    return " ".join([w for w in text.split() if w.lower() not in stop_words])
+
+triples_df["Entity1"] = triples_df["Entity1"].apply(clean_stopwords)
+triples_df["Relation"] = triples_df["Relation"].apply(clean_stopwords)
+triples_df["Entity2"] = triples_df["Entity2"].apply(clean_stopwords)
+# Drop any rows where entities became empty after stopword removal
+triples_df = triples_df.dropna(subset=["Entity1", "Relation", "Entity2"]).loc[
+    triples_df[["Entity1", "Relation", "Entity2"]].apply(lambda x: x.str.strip().ne("").all(), axis=1)
+].reset_index(drop=True)
+
+def triple_has_ner(triple_text):
+    entities = extract_entities(triple_text)
+    return len(entities) > 0
+triples_df["has_ner"] = triples_df["Entity1"] + " " + triples_df["Relation"] + " " + triples_df["Entity2"]
+triples_df = triples_df[triples_df["has_ner"].apply(triple_has_ner)].drop(columns=["has_ner"])
+triples_df = triples_df.head(100)
+# Remove exact duplicate triples (Entity1 + Relation + Entity2)
+triples_df = triples_df.drop_duplicates(subset=["Entity1", "Relation", "Entity2"]).reset_index(drop=True)
+triples_df.to_csv("triples.csv", index=False)
+print(f"Triples saved to triples.csv (total: {len(triples_df)})")
+print(triples_df.head())
+
+
+#Milestone 3 STreamlit app with semantic search and graph visualization
+import streamlit as st
+import pandas as pd
+import torch
+from sentence_transformers import SentenceTransformer
+import networkx as nx
+from pyvis.network import Network
+triples_df = pd.read_csv("triples.csv")  # must have Entity1, Relation, Entity2, Category, Date, Source
+triples_df["triple_text"] = triples_df["Entity1"] + " " + triples_df["Relation"] + " " + triples_df["Entity2"]
+# -------------------------
+# Load model globally
+# -------------------------
+model = SentenceTransformer("all-MiniLM-L6-v2")
+# -------------------------
+# Compute embeddings for triples
+# -------------------------
+@st.cache_data
+def compute_node_embeddings(_model, texts):
+    # _model ignored for Streamlit hashing
+    embeddings = _model.encode(texts, convert_to_tensor=True)
+    return embeddings
+
+node_list = triples_df["triple_text"].tolist()
+embeddings = compute_node_embeddings(model, node_list)
+
+# -------------------------
+# Semantic search function (not cached) to avoid tensor hashing issues
+# -------------------------
+def semantic_search(query, node_texts, embeddings, top_k=5):
+    query_emb = model.encode([query], convert_to_tensor=True)
+    scores = torch.nn.functional.cosine_similarity(query_emb, embeddings)
+
+    # --- Extra quality factors ---
+    quality_scores = []
+    for idx, triple in enumerate(node_texts):
+        row = triples_df.loc[idx]
+
+        # Entity weight (simple: PERSON/ORG/GPE boosted)
+        entity_weight = 0
+        for col in ["Entity1", "Entity2"]:
+            ent = str(row[col]).lower()
+            if ent in ["he", "she", "they", "it", "we", "you", "i"]:
+                entity_weight -= 0.2
+            elif len(ent) > 3:  # meaningful words
+                entity_weight += 0.2
+
+        # Relation length (longer verbs get a boost)
+        rel_len = len(str(row["Relation"]).split())
+        rel_weight = 0.1 * rel_len
+
+        # Frequency: how often this triple text appears
+        freq = node_texts.count(triple)
+        freq_weight = 0.05 * freq
+
+        # Final weighted score
+        final = float(scores[idx]) + entity_weight + rel_weight + freq_weight
+        quality_scores.append(final)
+
+    # Sort by new combined score
+    top_indices = sorted(range(len(quality_scores)), 
+                         key=lambda i: quality_scores[i], 
+                         reverse=True)[:min(top_k, len(node_texts))]
+
+    results = []
+    for idx in top_indices:
+        results.append({
+            "Triple": node_texts[idx],
+            "Score": float(quality_scores[idx]),   # final combined score
+            "Category": triples_df.loc[idx, "Category"],
+            "Date": triples_df.loc[idx, "Date"],
+            "Source": triples_df.loc[idx, "Source"]
+        })
+    return results
+
+# -------------------------
+# Build graph from triples
+# -------------------------
+def build_graph(df):
+    G = nx.DiGraph()
+    for _, row in df.iterrows():
+        subj = row["Entity1"]
+        rel = row["Relation"]
+        obj = row["Entity2"]
+        # Node tooltips
+        tooltip = f"Category: {row['Category']}<br>Date: {row['Date']}<br>Source: {row['Source']}"
+        G.add_node(subj, label=subj, title=tooltip)
+        G.add_node(obj, label=obj, title=tooltip)
+        G.add_edge(subj, obj, label=rel, title=rel)
+    return G
+
+# -------------------------
+# Highlight search results in Pyvis graph
+# -------------------------
+def highlight_search_results(G, results):
+    net = Network(height="600px", width="100%", notebook=False)
+    matched_nodes = set()
+    for r in results:
+        parts = r["Triple"].split()
+        if len(parts) >= 3:
+            subj, rel, obj = parts[0], parts[1], " ".join(parts[2:])
+            matched_nodes.add(subj)
+            matched_nodes.add(obj)
+    # Add nodes
+    for node, data in G.nodes(data=True):
+        color = "orange" if node in matched_nodes else "lightblue"
+        net.add_node(node, label=node, color=color, title=data.get("title", ""))
+    # Add edges
+    for u, v, data in G.edges(data=True):
+        net.add_edge(u, v, label=data.get("label", ""), title=data.get("title", ""))
+    return net
+
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.title("KnowMap – Cross Domain Knowledge Graph")
+query = st.text_input("Enter your query:")
+
+# Semantic search results
+results = []
+if query:
+    results = semantic_search(query, node_list, embeddings, top_k=10)
+    st.subheader("Top Search Results")
+    for r in results:
+        st.markdown(
+            f"- **Triple:** {r['Triple']}\n"
+            f"  - **Category:** {r['Category']}, **Date:** {r['Date']}\n"
+            f"  - **Source:** [Link]({r['Source']})"
+        )
+
+# Build graph
+G = build_graph(triples_df)
+
+# Highlight search results
+if query and results:
+    net = highlight_search_results(G, results)
+else:
+    net = Network(height="600px", width="100%", notebook=False)
+    for node, data in G.nodes(data=True):
+        net.add_node(node, label=node, color="lightblue", title=data.get("title", ""))
+    for u, v, data in G.edges(data=True):
+        net.add_edge(u, v, label=data.get("label", ""), title=data.get("title", ""))
+
+# Embed graph in Streamlit
+net.save_graph("graph.html")
+st.components.v1.html(open("graph.html", "r", encoding="utf-8").read(), height=600)
+
