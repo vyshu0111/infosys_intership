@@ -24,22 +24,3 @@ titanic_data sets
 
 ##divyansh - share the link pls if it can be pasted here
 
-Hey,communicating only through GitHub is a bit confusing and not very smooth for our project discussions. If you’re all okay with it, we can create a WhatsApp group and share updates there—it’ll be faster and easier to coordinate
-
-#cmtdivyansh - vyshnavi if you can share your mail id i can create a gmail space where we can chat without sharing phone no.
-i have created one with pooja's mail id
-
-pooja pls check if you can recieve message that i sent
-
-##vyshnavi vyshnavichemalamarri0111@gmail.com
-
-<img width="1242" height="763" alt="image" src="https://github.com/user-attachments/assets/3e8bf7d8-3b0f-4891-a5e4-5ad60ec1dcc2" />
-
-
-#divyansh - if it is not working we can create group
-#vyshnavi i texted you in mail did you recieved 
-we can also create a WhatsApp group If you’re all okay.
-#cmtdivyansh - i think mail text is not working, lets create the whatsapp group
-
-
-##vyshnavi i did not receive any mail divyansh
