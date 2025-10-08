@@ -1,0 +1,348 @@
+# ===========================================
+# KnowMap – Cross Domain Knowledge Graph
+# ===========================================
+import streamlit as st
+import pandas as pd
+import torch
+from sentence_transformers import SentenceTransformer
+import networkx as nx
+from pyvis.network import Network
+from networkx.algorithms import community as nx_community
+import matplotlib.pyplot as plt
+import io
+
+st.set_page_config(page_title="KnowMap – Cross Domain Knowledge Graph", layout="wide")
+
+# -------------------------
+# Load triples
+# -------------------------
+@st.cache_data
+def load_triples(path="news_dataset.csv"):
+    df = pd.read_csv(path)
+    for col in ["Entity1", "Relation", "Entity2", "Category", "Date", "Source"]:
+        if col not in df.columns:
+            df[col] = ""
+    df["triple_text"] = df["Entity1"].astype(str).str.strip() + " " + df["Relation"].astype(str).str.strip() + " " + df["Entity2"].astype(str).str.strip()
+    return df
+
+triples_df = load_triples("triples.csv")
+if triples_df.empty:
+    st.error("triples.csv not found or empty. Make sure triples.csv exists in the working directory.")
+    st.stop()
+
+# -------------------------
+# Build graph
+# -------------------------
+@st.cache_data
+def build_graph(df):
+    G = nx.DiGraph()
+    for _, row in df.iterrows():
+        subj = str(row["Entity1"]).strip()
+        rel = str(row["Relation"]).strip()
+        obj = str(row["Entity2"]).strip()
+        if subj == "" or obj == "":
+            continue
+        tooltip = f"Category: {row.get('Category','')}<br>Date: {row.get('Date','')}<br>Source: {row.get('Source','')}"
+        if not G.has_node(subj):
+            G.add_node(subj, title=tooltip)
+        if not G.has_node(obj):
+            G.add_node(obj, title=tooltip)
+        G.add_edge(subj, obj, label=rel if rel else "", title=rel if rel else "")
+    return G
+
+G = build_graph(triples_df)
+
+# -------------------------
+# Graph analytics
+# -------------------------
+@st.cache_data
+def compute_centralities(_graph):
+    undirected = _graph.to_undirected()
+    deg = nx.degree_centrality(_graph)
+    in_deg = dict(_graph.in_degree())
+    out_deg = dict(_graph.out_degree())
+    bet = nx.betweenness_centrality(_graph, normalized=True)
+    clo = nx.closeness_centrality(undirected)
+    try:
+        eig = nx.eigenvector_centrality_numpy(undirected)
+    except Exception:
+        eig = {n: 0.0 for n in _graph.nodes()}
+    rows = []
+    for n in _graph.nodes():
+        rows.append({
+            "node": n,
+            "degree_centrality": deg.get(n, 0.0),
+            "in_degree": in_deg.get(n, 0),
+            "out_degree": out_deg.get(n, 0),
+            "betweenness_centrality": bet.get(n, 0.0),
+            "closeness_centrality": clo.get(n, 0.0),
+            "eigenvector_centrality": eig.get(n, 0.0)
+        })
+    df_cent = pd.DataFrame(rows).sort_values(by="degree_centrality", ascending=False).reset_index(drop=True)
+    return df_cent
+
+centrality_df = compute_centralities(G)
+
+@st.cache_data
+def detect_communities(_graph):
+    undirected = _graph.to_undirected()
+    communities = nx_community.greedy_modularity_communities(undirected)
+    node_to_comm = {}
+    for i, comm in enumerate(communities):
+        for node in comm:
+            node_to_comm[node] = i
+    comm_rows = []
+    for i, comm in enumerate(communities):
+        members = list(sorted(comm))
+        comm_rows.append({
+            "community_id": i,
+            "size": len(members),
+            "members_sample": ", ".join(members[:8]) + ("..." if len(members) > 8 else "")
+        })
+    comm_df = pd.DataFrame(comm_rows).sort_values("size", ascending=False).reset_index(drop=True)
+    return node_to_comm, comm_df
+
+node_to_comm, comm_df = detect_communities(G)
+
+for idx, row in centrality_df.iterrows():
+    node = row["node"]
+    if G.has_node(node):
+        G.nodes[node]["degree_centrality"] = float(row["degree_centrality"])
+        G.nodes[node]["betweenness_centrality"] = float(row["betweenness_centrality"])
+        G.nodes[node]["closeness_centrality"] = float(row["closeness_centrality"])
+        G.nodes[node]["eigenvector_centrality"] = float(row["eigenvector_centrality"])
+        G.nodes[node]["community"] = int(node_to_comm.get(node, -1))
+        title = f"Node: {node}<br>DegreeC: {row['degree_centrality']:.4f}<br>Betweenness: {row['betweenness_centrality']:.4f}<br>Closeness: {row['closeness_centrality']:.4f}<br>Eigenvector: {row['eigenvector_centrality']:.4f}<br>Community: {node_to_comm.get(node, -1)}"
+        G.nodes[node]["title"] = title
+
+# -------------------------
+# Embeddings for semantic search
+# -------------------------
+@st.cache_resource
+def load_model(name="all-MiniLM-L6-v2"):
+    return SentenceTransformer(name)
+
+model = load_model()
+
+@st.cache_data
+def compute_embeddings(texts):
+    emb = model.encode(texts, convert_to_tensor=True)
+    return emb
+
+node_list = triples_df["triple_text"].tolist()
+embeddings = compute_embeddings(node_list)
+
+def semantic_search(query, node_texts, embeddings, top_k=5):
+    if not query:
+        return []
+    query_emb = model.encode([query], convert_to_tensor=True)
+    scores = torch.nn.functional.cosine_similarity(query_emb, embeddings)
+    quality_scores = []
+    for idx, triple in enumerate(node_texts):
+        row = triples_df.loc[idx]
+        entity_weight = 0
+        for col in ["Entity1", "Entity2"]:
+            ent = str(row[col]).lower()
+            if ent in ["he", "she", "they", "it", "we", "you", "i"]:
+                entity_weight -= 0.2
+            elif len(ent) > 3:
+                entity_weight += 0.2
+        rel_len = len(str(row["Relation"]).split())
+        rel_weight = 0.1 * rel_len
+        freq = node_texts.count(triple)
+        freq_weight = 0.05 * freq
+        final = float(scores[idx]) + entity_weight + rel_weight + freq_weight
+        quality_scores.append(final)
+    top_indices = sorted(range(len(quality_scores)), key=lambda i: quality_scores[i], reverse=True)[:min(top_k, len(node_texts))]
+    results = []
+    for idx in top_indices:
+        results.append({
+            "Triple": node_texts[idx],
+            "Score": float(quality_scores[idx]),
+            "Category": triples_df.loc[idx, "Category"],
+            "Date": triples_df.loc[idx, "Date"],
+            "Source": triples_df.loc[idx, "Source"]
+        })
+    return results
+
+# -------------------------
+# Pyvis graph builder
+# -------------------------
+def build_pyvis_from_graph(graph, centrality_metric="degree_centrality", highlight_nodes=None, notebook=False):
+    net = Network(height="700px", width="100%", notebook=notebook)
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
+    ]
+    default_color = "#97c2fc"
+    values = []
+    for n in graph.nodes():
+        val = graph.nodes[n].get(centrality_metric, 0.0)
+        values.append(val)
+    minv, maxv = (min(values) if values else 0.0), (max(values) if values else 0.0)
+    def scale_size(v, minv=minv, maxv=maxv, min_size=8, max_size=40):
+        if maxv - minv < 1e-8:
+            return int((min_size + max_size) // 2)
+        return int(min_size + (v - minv) / (maxv - minv) * (max_size - min_size))
+    for node, data in graph.nodes(data=True):
+        comm = data.get("community", -1)
+        color = palette[comm % len(palette)] if comm >= 0 else default_color
+        central_val = data.get(centrality_metric, 0.0)
+        size = scale_size(central_val)
+        title = data.get("title", "")
+        if highlight_nodes and node in highlight_nodes:
+            net.add_node(node, label=node, title=title, color="#ffcc00", size=size + 8)
+        else:
+            net.add_node(node, label=node, title=title, color=color, size=size)
+    for u, v, data in graph.edges(data=True):
+        label = data.get("label", "")
+        net.add_edge(u, v, label=label, title=label)
+    net.toggle_physics(True)
+    return net
+
+# -------------------------
+# Streamlit Layout
+# -------------------------
+st.title("KnowMap – Cross Domain Knowledge Graph")
+left, right = st.columns([1, 2])
+
+with left:
+    st.header("Search & Analytics")
+    query = st.text_input("Enter your query for semantic search:")
+    if query:
+        results = semantic_search(query, node_list, embeddings, top_k=10)
+        st.subheader("Top Search Results")
+        for r in results:
+            st.markdown(
+                f"- *Triple:* {r['Triple']}\n"
+                f"  - *Category:* {r['Category']}, *Date:* {r['Date']}\n"
+                f"  - *Source:* [Link]({r['Source']})"
+            )
+    else:
+        results = []
+
+    st.markdown("---")
+    st.subheader("Centrality & Community Controls")
+    metric = st.selectbox(
+        "Choose centrality metric (used for node sizing):",
+        ("degree_centrality", "in_degree", "out_degree", "betweenness_centrality", "closeness_centrality", "eigenvector_centrality"),
+        index=0
+    )
+    topk = st.number_input("Show top-K nodes by selected metric", min_value=1, max_value=200, value=10, step=1)
+    show_table = st.checkbox("Show centrality table", value=True)
+    show_comm = st.checkbox("Show community summary", value=True)
+
+    sorted_df = centrality_df.sort_values(by=metric, ascending=False).reset_index(drop=True)
+    topk_df = sorted_df.head(int(topk))
+    st.markdown(f"### Top {int(topk)} nodes by *{metric}*")
+    st.table(topk_df[["node", metric]])
+
+    csv_buf = topk_df.to_csv(index=False).encode("utf-8")
+    st.download_button("Download top-K as CSV", data=csv_buf, file_name=f"top_{topk}_{metric}.csv", mime="text/csv")
+
+    if show_table:
+        st.markdown("#### Full centrality dataframe (first 200 rows)")
+        st.dataframe(centrality_df.head(200))
+
+    if show_comm:
+        st.markdown("#### Community summary")
+        st.dataframe(comm_df)
+        comm_csv = comm_df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download communities CSV", data=comm_csv, file_name="communities.csv", mime="text/csv")
+
+with right:
+    st.header("Interactive Graph Visualization")
+    highlight_nodes = set()
+    if query and results:
+        for r in results:
+            parts = r["Triple"].split()
+            if len(parts) >= 3:
+                subj = parts[0]
+                obj = " ".join(parts[2:])
+                highlight_nodes.add(subj)
+                highlight_nodes.add(obj)
+
+    net = build_pyvis_from_graph(G, centrality_metric=metric, highlight_nodes=highlight_nodes)
+    net.save_graph("graph.html")
+    html = open("graph.html", "r", encoding="utf-8").read()
+    st.components.v1.html(html, height=700, scrolling=True)
+
+# -------------------------
+# Diagnostics & Exports
+# -------------------------
+st.markdown("---")
+st.header("Diagnostics & Exports")
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Nodes", value=len(G.nodes()))
+with col2:
+    st.metric("Edges", value=len(G.edges()))
+with col3:
+    st.metric("Communities", value=len(comm_df))
+
+full_nodes = centrality_df.copy()
+full_nodes["community"] = full_nodes["node"].map(lambda n: node_to_comm.get(n, -1))
+st.download_button("Download full node centrality + community CSV", data=full_nodes.to_csv(index=False).encode("utf-8"), file_name="node_centrality_communities.csv", mime="text/csv")
+
+# ===============================================================
+# ----------- ADDITIONAL FEATURES (MILESTONE 4) -----------------
+# ===============================================================
+
+st.markdown("---")
+st.header("🧠 Question Answering (QA) on Knowledge Graph")
+
+qa_query = st.text_input("Ask a question (e.g., 'Who founded Microsoft?')")
+if qa_query:
+    answers = semantic_search(qa_query, node_list, embeddings, top_k=5)
+    st.write("### Top Relevant Triples")
+    qa_df = pd.DataFrame(answers)
+    st.dataframe(qa_df[["Triple", "Category", "Date", "Source", "Score"]])
+    st.download_button("Download QA Results", data=qa_df.to_csv(index=False).encode("utf-8"),
+                       file_name="qa_results.csv", mime="text/csv")
+
+st.markdown("---")
+st.header("🌐 Cross-Domain Entity Linking")
+
+def cross_domain_linking(df):
+    domain_links = []
+    categories = df["Category"].dropna().unique()
+    for c1 in categories:
+        for c2 in categories:
+            if c1 != c2:
+                ents1 = set(df[df["Category"] == c1]["Entity1"]).union(set(df[df["Category"] == c1]["Entity2"]))
+                ents2 = set(df[df["Category"] == c2]["Entity1"]).union(set(df[df["Category"] == c2]["Entity2"]))
+                common = ents1.intersection(ents2)
+                if len(common) > 0:
+                    domain_links.append((c1, c2, len(common)))
+    cross_links = pd.DataFrame(domain_links, columns=["Domain1", "Domain2", "Shared_Entities"])
+    return cross_links.sort_values("Shared_Entities", ascending=False).reset_index(drop=True)
+
+cross_links = cross_domain_linking(triples_df)
+st.write("### Domains with Shared Entities")
+st.dataframe(cross_links)
+st.download_button("Download Cross-Domain Links CSV",
+                   data=cross_links.to_csv(index=False).encode("utf-8"),
+                   file_name="cross_domain_links.csv", mime="text/csv")
+
+st.markdown("---")
+st.header("📊 Graph-Level Insights")
+
+st.subheader("Degree Distribution")
+degrees = [d for _, d in G.degree()]
+fig, ax = plt.subplots()
+ax.hist(degrees, bins=20)
+ax.set_xlabel("Degree")
+ax.set_ylabel("Frequency")
+ax.set_title("Degree Distribution of Knowledge Graph")
+st.pyplot(fig)
+
+st.subheader("Connected Components Overview")
+undirected = G.to_undirected()
+components = list(nx.connected_components(undirected))
+comp_info = pd.DataFrame({
+    "Component_ID": list(range(len(components))),
+    "Size": [len(c) for c in components]
+}).sort_values("Size", ascending=False)
+st.dataframe(comp_info)
+st.download_button("Download Component Info", data=comp_info.to_csv(index=False).encode("utf-8"),
+                   file_name="graph_components.csv", mime="text/csv")
